@@ -2,7 +2,6 @@
 
 use std::ops::{Add, Sub};
 use std::process::Output;
-use smallvec::SmallVec;
 
 const MAX_CHUNK_DEPTH: usize = 8;
 const CHUNK_INDEX_MASK: usize = 0xFF;
@@ -60,7 +59,7 @@ struct ChunkSublists<'a, D>
 	/// (the maximum u8 value), so until the sublists vector is full, the unchanged array values
 	/// will not be valid indices for the sublists vector.
 	sublist_indices: [u8; MAX_CHUNK_SIZE],
-	sublists: SmallVec<[&'a dyn SpacedList<D>; STACK_STORED_SUBLISTS]>,
+	sublists: Vec<&'a dyn SpacedList<D>>,
 }
 
 impl<'a, D> ChunkSublists<'a, D>
@@ -68,7 +67,7 @@ impl<'a, D> ChunkSublists<'a, D>
 	fn new() -> ChunkSublists<'a, D> {
 		ChunkSublists {
 			sublist_indices: [255; MAX_CHUNK_SIZE],
-			sublists: SmallVec::new()
+			sublists: Vec::new()
 		}
 	}
 }
