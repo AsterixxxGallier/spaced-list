@@ -1,30 +1,51 @@
-#![allow(unused)]
+#![feature(trait_alias)]
+#![allow(unused_variables)]
+#![allow(unused_mut)]
 
-use std::ops::{Add, Sub};
-use std::process::Output;
+use num_traits::{CheckedAdd, CheckedSub, Zero};
 
-const MAX_CHUNK_DEPTH: usize = 8;
-const CHUNK_INDEX_MASK: usize = 0xFF;
-const MAX_CHUNK_SIZE: usize = 256;
-const LINK_LENGTHS_SIZE: usize = 511;
-const LINK_LENGTH_NODE_INDICES: [usize; MAX_CHUNK_SIZE] = generate_link_length_node_indices();
-const LINK_INDICES_ABOVE: [[usize; MAX_CHUNK_DEPTH]; MAX_CHUNK_SIZE] = generate_link_indices_above();
-const STACK_STORED_SUBLISTS: usize = 4;
+pub trait Spacing = Zero + CheckedAdd + CheckedSub + Ord + Copy;
 
-const fn generate_link_length_node_indices() -> [usize; MAX_CHUNK_SIZE] {
-	let mut indices = [0usize; MAX_CHUNK_SIZE];
-	let mut node_index = 0usize;
+// region constants
+
+pub const MAX_CHUNK_DEPTH: usize = 8;
+pub const CHUNK_INDEX_MASK: usize = 0xFF;
+pub const MAX_CHUNK_SIZE: usize = 256;
+pub const LINK_LENGTHS_SIZE: usize = 511;
+pub const LINK_INDICES_ABOVE: [[usize; MAX_CHUNK_DEPTH]; MAX_CHUNK_SIZE] = generate_link_indices_above();
+pub const LINK_LENGTH_DEGREE_INDICES: [usize; MAX_CHUNK_DEPTH] = generate_link_length_degree_indices();
+// pub const LINK_LENGTH_NODE_INDICES: [usize; MAX_CHUNK_SIZE] = generate_link_length_node_indices();
+
+// const fn generate_link_length_node_indices() -> [usize; MAX_CHUNK_SIZE] {
+	// let mut indices = [0usize; MAX_CHUNK_SIZE];
+	// let mut node_index = 0usize;
+	// let mut link_index = 0usize;
+	// while node_index < MAX_CHUNK_SIZE {
+	// 	indices[node_index] = link_index;
+	// 	link_index += number_of_links(node_index as u8) as usize;
+	// 	node_index += 1
+	// }
+	// indices
+// }
+
+// pub const fn link_index(node_index: usize, degree: usize) -> usize {
+// 	LINK_LENGTH_DEGREE_INDICES[node_index] + degree
+// }
+
+const fn generate_link_length_degree_indices() -> [usize; MAX_CHUNK_DEPTH] {
+	let mut indices = [0usize; MAX_CHUNK_DEPTH];
 	let mut link_index = 0usize;
-	while node_index < MAX_CHUNK_SIZE {
-		indices[node_index] = link_index;
-		link_index += number_of_links(node_index as u8) as usize;
-		node_index += 1
+	let mut degree = 0usize;
+	while degree < MAX_CHUNK_DEPTH {
+		indices[degree] = link_index;
+		link_index += MAX_CHUNK_SIZE >> degree;
+		degree += 1
 	}
 	indices
 }
 
-const fn link_index(node_index: usize, degree: usize) -> usize {
-	LINK_LENGTH_NODE_INDICES[node_index] + degree
+pub const fn link_index(node_index: usize, degree: usize) -> usize {
+	LINK_LENGTH_DEGREE_INDICES[degree] + node_index
 }
 
 const fn generate_link_indices_above() -> [[usize; MAX_CHUNK_DEPTH]; MAX_CHUNK_SIZE] {
@@ -50,8 +71,9 @@ const fn number_of_links(index: u8) -> u32 {
 	index.trailing_zeros() + 1
 }
 
-struct ChunkSublists<'a, D>
-	where D: Add<Output = D> + Sub<Output = D> + Copy + From<i32> {
+// endregion
+
+pub struct ChunkSublists<'a, D: Spacing> {
 	/// The indices pointing to elements in the sublists vector, where the index in the array
 	/// corresponds to the node index the sublist is *before*. If the sublist index is greater than
 	/// or equal to the size of the sublists vector, it is to be understood as there not being a
@@ -59,12 +81,11 @@ struct ChunkSublists<'a, D>
 	/// (the maximum u8 value), so until the sublists vector is full, the unchanged array values
 	/// will not be valid indices for the sublists vector.
 	sublist_indices: [u8; MAX_CHUNK_SIZE],
-	sublists: Vec<&'a dyn SpacedList<D>>,
+	pub sublists: Vec<&'a dyn SpacedList<D>>,
 }
 
-impl<'a, D> ChunkSublists<'a, D>
-	where D: Add<Output = D> + Sub<Output = D> + Copy + From<i32> {
-	fn new() -> ChunkSublists<'a, D> {
+impl<'a, D: Spacing> Default for ChunkSublists<'a, D> {
+	fn default() -> Self {
 		ChunkSublists {
 			sublist_indices: [255; MAX_CHUNK_SIZE],
 			sublists: Vec::new()
@@ -72,23 +93,43 @@ impl<'a, D> ChunkSublists<'a, D>
 	}
 }
 
-trait SpacedList<D> {
+impl<'a, D: Spacing> ChunkSublists<'a, D> {
+	pub fn new() -> Self {
+		Self::default()
+	}
+}
+
+pub trait SpacedList<D> {
 	fn append_node(&mut self, distance: D);
 
 	fn node_at(&self, position: D) -> Option<Vec<usize>>;
 }
 
-struct SpacedListSkeleton<'a, D>
-	where D: Add<Output = D> + Sub<Output = D> + Copy + From<i32> {
-	size: usize,
-	total_length: D,
-	offset: D,
-	levels: Vec<Vec<ChunkSkeleton<D>>>,
-	sublists: Vec<ChunkSublists<'a, D>>
+pub struct SpacedListSkeleton<'a, D: Spacing> {
+	pub size: usize,
+	pub total_length: D,
+	pub offset: D,
+	pub levels: Vec<Vec<ChunkSkeleton<D>>>,
+	pub sublists: Vec<ChunkSublists<'a, D>>
 }
 
-impl<D> SpacedListSkeleton<'_, D>
-	where D: Add<Output = D> + Sub<Output = D> + PartialOrd + Copy + From<i32> {
+impl<D: Spacing> Default for SpacedListSkeleton<'_, D> {
+	fn default() -> Self {
+		SpacedListSkeleton {
+			size: 0,
+			total_length: Zero::zero(),
+			offset: Zero::zero(),
+			levels: Vec::new(),
+			sublists: Vec::new()
+		}
+	}
+}
+
+impl<D: Spacing> SpacedListSkeleton<'_, D> {
+	pub fn new() -> Self {
+		Default::default()
+	}
+
 	fn top_chunk(&self) -> Option<&ChunkSkeleton<D>> {
 		self.levels.last()?.last()
 	}
@@ -103,11 +144,11 @@ impl<D> SpacedListSkeleton<'_, D>
 			let mut new_top = ChunkSkeleton::<D>::new();
 			let old_top = self.top_chunk().unwrap();
 			// TODO store old top somehow maybe possibly (append_element)? dunno rn
-			new_top.append_node(0.into());
+			new_top.append_node(num_traits::zero());
 			// let old_top = self.top_chunk();
 			// match old_top {
 			// 	None => {}
-			// 	Some(it) => { new_top.append_node(0.into()) }
+			// 	Some(it) => { new_top.append_node(num_traits::zero()) }
 			// }
 			self.levels.push(vec![new_top]);
 			return;
@@ -115,8 +156,8 @@ impl<D> SpacedListSkeleton<'_, D>
 		let last = self.levels[level].last().unwrap();
 		let last_total_length = last.total_length;
 		if last.size == MAX_CHUNK_SIZE {
-			self.make_space(level + 1, 0.into());
-			let mut last_above = self.levels[level + 1].last_mut().unwrap();
+			self.make_space(level + 1, num_traits::zero());
+			let last_above = self.levels[level + 1].last_mut().unwrap();
 			let new_last = ChunkSkeleton::<D>::new();
 			// TODO store new last somehow maybe possibly (append_element)? dunno rn
 			last_above.append_node(last_total_length + distance);
@@ -125,8 +166,7 @@ impl<D> SpacedListSkeleton<'_, D>
 	}
 }
 
-impl<D> SpacedList<D> for SpacedListSkeleton<'_, D>
-	where D: Add<Output = D> + Sub<Output = D> + PartialOrd + Copy + From<i32> {
+impl<D: Spacing> SpacedList<D> for SpacedListSkeleton<'_, D> {
 	fn append_node(&mut self, distance: D) {
 		self.make_space(0, distance);
 		if self.size == 0 {
@@ -143,11 +183,11 @@ impl<D> SpacedList<D> for SpacedListSkeleton<'_, D>
 		}
 
 		let mut current_index = 0usize;
-		let mut current_position: D = 0.into();
+		let mut current_position: D = num_traits::zero();
 		let mut degree = self.levels.len() * MAX_CHUNK_DEPTH - 1;
 		let mut level = self.levels.len() - 1;
 		// TODO set this somewhere somehow
-		let mut position_before_level_0 = 0.into();
+		let mut position_before_level_0 = num_traits::zero();
 		loop {
 			let chunks = &self.levels[level];
 			let to_next_index = 1usize << level;
@@ -179,22 +219,28 @@ impl<D> SpacedList<D> for SpacedListSkeleton<'_, D>
 	}
 }
 
-struct ChunkSkeleton<D: Add<Output = D> + Sub<Output = D> + Copy + From<i32>> {
-	size: usize,
-	total_length: D,
-	link_lengths: [D; LINK_LENGTHS_SIZE],
+pub struct ChunkSkeleton<D: Spacing> {
+	pub link_lengths: [D; LINK_LENGTHS_SIZE],
+	pub total_length: D,
+	pub size: usize,
 }
 
-impl<D: Add<Output = D> + Sub<Output = D> + Copy + From<i32>> ChunkSkeleton<D> {
-	fn new() -> ChunkSkeleton<D> {
+impl<D: Spacing> Default for ChunkSkeleton<D> {
+	fn default() -> Self {
 		Self {
 			size: 0,
-			total_length: 0.into(),
-			link_lengths: [0.into(); LINK_LENGTHS_SIZE],
+			total_length: num_traits::zero(),
+			link_lengths: [num_traits::zero(); LINK_LENGTHS_SIZE],
 		}
 	}
+}
 
-	fn append_node(&mut self, distance: D) {
+impl<D: Spacing> ChunkSkeleton<D> {
+	pub fn new() -> Self {
+		Default::default()
+	}
+
+	pub fn append_node(&mut self, distance: D) {
 		if self.size == 0 {
 			self.size = 1;
 			return;
@@ -210,7 +256,7 @@ impl<D: Add<Output = D> + Sub<Output = D> + Copy + From<i32>> ChunkSkeleton<D> {
 
 #[cfg(test)]
 mod tests {
-	use crate::{link_index, LINK_INDICES_ABOVE, LINK_LENGTH_NODE_INDICES, number_of_links};
+	use crate::{link_index, LINK_INDICES_ABOVE, LINK_LENGTH_DEGREE_INDICES, number_of_links};
 
 	#[test]
 	fn test_link_index() {
@@ -244,12 +290,12 @@ mod tests {
 
 	#[test]
 	fn test_link_length_node_indices() {
-		assert_eq!(LINK_LENGTH_NODE_INDICES[0], 0);
-		assert_eq!(LINK_LENGTH_NODE_INDICES[1], 9);
-		assert_eq!(LINK_LENGTH_NODE_INDICES[2], 10);
-		assert_eq!(LINK_LENGTH_NODE_INDICES[3], 12);
-		assert_eq!(LINK_LENGTH_NODE_INDICES[4], 13);
-		assert_eq!(LINK_LENGTH_NODE_INDICES[5], 16);
+		assert_eq!(LINK_LENGTH_DEGREE_INDICES[0], 0);
+		assert_eq!(LINK_LENGTH_DEGREE_INDICES[1], 9);
+		assert_eq!(LINK_LENGTH_DEGREE_INDICES[2], 10);
+		assert_eq!(LINK_LENGTH_DEGREE_INDICES[3], 12);
+		assert_eq!(LINK_LENGTH_DEGREE_INDICES[4], 13);
+		assert_eq!(LINK_LENGTH_DEGREE_INDICES[5], 16);
 	}
 
 	#[test]
