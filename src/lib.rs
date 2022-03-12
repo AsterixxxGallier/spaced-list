@@ -14,23 +14,7 @@ pub const MAX_CHUNK_SIZE: usize = 256;
 pub const LINK_LENGTHS_SIZE: usize = 511;
 pub const LINK_INDICES_ABOVE: [[usize; MAX_CHUNK_DEPTH]; MAX_CHUNK_SIZE] = generate_link_indices_above();
 pub const LINK_LENGTH_DEGREE_INDICES: [usize; MAX_CHUNK_DEPTH] = generate_link_length_degree_indices();
-// pub const LINK_LENGTH_NODE_INDICES: [usize; MAX_CHUNK_SIZE] = generate_link_length_node_indices();
 
-// const fn generate_link_length_node_indices() -> [usize; MAX_CHUNK_SIZE] {
-	// let mut indices = [0usize; MAX_CHUNK_SIZE];
-	// let mut node_index = 0usize;
-	// let mut link_index = 0usize;
-	// while node_index < MAX_CHUNK_SIZE {
-	// 	indices[node_index] = link_index;
-	// 	link_index += number_of_links(node_index as u8) as usize;
-	// 	node_index += 1
-	// }
-	// indices
-// }
-
-// pub const fn link_index(node_index: usize, degree: usize) -> usize {
-// 	LINK_LENGTH_DEGREE_INDICES[node_index] + degree
-// }
 
 const fn generate_link_length_degree_indices() -> [usize; MAX_CHUNK_DEPTH] {
 	let mut indices = [0usize; MAX_CHUNK_DEPTH];
