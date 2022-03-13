@@ -8,7 +8,7 @@ pub trait Spacing = Zero + CheckedAdd + CheckedSub + Ord + Copy;
 
 // region constants
 
-pub const MAX_CHUNK_DEPTH: usize = 8;
+pub const MAX_CHUNK_DEPTH: usize = 9;
 pub const CHUNK_INDEX_MASK: usize = 0xFF;
 pub const MAX_CHUNK_SIZE: usize = 256;
 pub const LINK_LENGTHS_SIZE: usize = 511;
@@ -29,7 +29,7 @@ const fn generate_link_length_degree_indices() -> [usize; MAX_CHUNK_DEPTH] {
 }
 
 pub const fn link_index(node_index: usize, degree: usize) -> usize {
-	LINK_LENGTH_DEGREE_INDICES[degree] + node_index
+	LINK_LENGTH_DEGREE_INDICES[degree] + (node_index >> degree)
 }
 
 const fn generate_link_indices_above() -> [[usize; MAX_CHUNK_DEPTH]; MAX_CHUNK_SIZE] {
@@ -245,41 +245,100 @@ mod tests {
 	#[test]
 	fn test_link_index() {
 		assert_eq!(link_index(0, 0), 0);
-		assert_eq!(link_index(0, 1), 1);
-		assert_eq!(link_index(0, 2), 2);
-		assert_eq!(link_index(0, 3), 3);
-		assert_eq!(link_index(0, 4), 4);
-		assert_eq!(link_index(0, 5), 5);
-		assert_eq!(link_index(0, 6), 6);
-		assert_eq!(link_index(0, 7), 7);
-		assert_eq!(link_index(0, 8), 8);
-		assert_eq!(link_index(1, 0), 9);
-		assert_eq!(link_index(2, 0), 10);
-		assert_eq!(link_index(2, 1), 11);
-		assert_eq!(link_index(3, 0), 12);
-		assert_eq!(link_index(4, 0), 13);
-		assert_eq!(link_index(4, 1), 14);
-		assert_eq!(link_index(4, 2), 15);
-		assert_eq!(link_index(5, 0), 16);
+		assert_eq!(link_index(1, 0), 1);
+		assert_eq!(link_index(2, 0), 2);
+		assert_eq!(link_index(3, 0), 3);
+		assert_eq!(link_index(0, 1), 256);
+		assert_eq!(link_index(1, 1), 256);
+		assert_eq!(link_index(2, 1), 256 + 1);
+		assert_eq!(link_index(0, 2), 256 + 128);
+		assert_eq!(link_index(1, 2), 256 + 128);
+		assert_eq!(link_index(2, 2), 256 + 128);
+		assert_eq!(link_index(3, 2), 256 + 128);
+		assert_eq!(link_index(4, 2), 256 + 128 + 1);
+		assert_eq!(link_index(5, 2), 256 + 128 + 1);
+		assert_eq!(link_index(6, 2), 256 + 128 + 1);
+		assert_eq!(link_index(7, 2), 256 + 128 + 1);
+		assert_eq!(link_index(8, 2), 256 + 128 + 2);
+		assert_eq!(link_index(0, 3), 256 + 128 + 64);
+		assert_eq!(link_index(0, 4), 256 + 128 + 64 + 32);
+		assert_eq!(link_index(0, 5), 256 + 128 + 64 + 32 + 16);
+		assert_eq!(link_index(0, 6), 256 + 128 + 64 + 32 + 16 + 8);
+		assert_eq!(link_index(0, 7), 256 + 128 + 64 + 32 + 16 + 8 + 4);
+		assert_eq!(link_index(0, 8), 256 + 128 + 64 + 32 + 16 + 8 + 4 + 2);
 	}
 
 	#[test]
 	fn test_link_indices_above() {
-		assert_eq!(LINK_INDICES_ABOVE[0], [0; 8]);
-		assert_eq!(LINK_INDICES_ABOVE[1], [0, 1, 2, 3, 4, 5, 6, 7]);
-		assert_eq!(LINK_INDICES_ABOVE[2], [9, 1, 2, 3, 4, 5, 6, 7]);
-		assert_eq!(LINK_INDICES_ABOVE[3], [10, 11, 2, 3, 4, 5, 6, 7]);
-		assert_eq!(LINK_INDICES_ABOVE[4], [12, 11, 2, 3, 4, 5, 6, 7]);
+		assert_eq!(LINK_INDICES_ABOVE[0], [0; 9]);
+		assert_eq!(LINK_INDICES_ABOVE[1], [
+			link_index(0, 0),
+			link_index(0, 1),
+			link_index(0, 2),
+			link_index(0, 3),
+			link_index(0, 4),
+			link_index(0, 5),
+			link_index(0, 6),
+			link_index(0, 7),
+			link_index(0, 8),
+		]);
+		assert_eq!(LINK_INDICES_ABOVE[2], [
+			link_index(1, 0),
+			link_index(0, 1),
+			link_index(0, 2),
+			link_index(0, 3),
+			link_index(0, 4),
+			link_index(0, 5),
+			link_index(0, 6),
+			link_index(0, 7),
+			link_index(0, 8),
+		]);
+		assert_eq!(LINK_INDICES_ABOVE[3], [
+			link_index(2, 0),
+			link_index(2, 1),
+			link_index(0, 2),
+			link_index(0, 3),
+			link_index(0, 4),
+			link_index(0, 5),
+			link_index(0, 6),
+			link_index(0, 7),
+			link_index(0, 8),
+		]);
+		assert_eq!(LINK_INDICES_ABOVE[4], [
+			link_index(3, 0),
+			link_index(2, 1),
+			link_index(2, 2),
+			link_index(0, 3),
+			link_index(0, 4),
+			link_index(0, 5),
+			link_index(0, 6),
+			link_index(0, 7),
+			link_index(0, 8),
+		]);
+		assert_eq!(LINK_INDICES_ABOVE[5], [
+			link_index(4, 0),
+			link_index(4, 1),
+			link_index(4, 2),
+			link_index(1, 3),
+			link_index(0, 4),
+			link_index(0, 5),
+			link_index(0, 6),
+			link_index(0, 7),
+			link_index(0, 8),
+		]);
 	}
 
 	#[test]
-	fn test_link_length_node_indices() {
+	fn test_link_length_degree_indices() {
 		assert_eq!(LINK_LENGTH_DEGREE_INDICES[0], 0);
-		assert_eq!(LINK_LENGTH_DEGREE_INDICES[1], 9);
-		assert_eq!(LINK_LENGTH_DEGREE_INDICES[2], 10);
-		assert_eq!(LINK_LENGTH_DEGREE_INDICES[3], 12);
-		assert_eq!(LINK_LENGTH_DEGREE_INDICES[4], 13);
-		assert_eq!(LINK_LENGTH_DEGREE_INDICES[5], 16);
+		assert_eq!(LINK_LENGTH_DEGREE_INDICES[1], 256);
+		assert_eq!(LINK_LENGTH_DEGREE_INDICES[2], 256 + 128);
+		assert_eq!(LINK_LENGTH_DEGREE_INDICES[3], 256 + 128 + 64);
+		assert_eq!(LINK_LENGTH_DEGREE_INDICES[4], 256 + 128 + 64 + 32);
+		assert_eq!(LINK_LENGTH_DEGREE_INDICES[5], 256 + 128 + 64 + 32 + 16);
+		assert_eq!(LINK_LENGTH_DEGREE_INDICES[6], 256 + 128 + 64 + 32 + 16 + 8);
+		assert_eq!(LINK_LENGTH_DEGREE_INDICES[7], 256 + 128 + 64 + 32 + 16 + 8 + 4);
+		assert_eq!(LINK_LENGTH_DEGREE_INDICES[8], 256 + 128 + 64 + 32 + 16 + 8 + 4 + 2);
 	}
 
 	#[test]
