@@ -1,6 +1,7 @@
 #![feature(trait_alias)]
-#![allow(unused_variables)]
-#![allow(unused_mut)]
+// #![allow(unused_variables)]
+// #![allow(unused_mut)]
+
 
 use num_traits::{CheckedAdd, CheckedSub, Zero};
 
@@ -51,13 +52,13 @@ const fn generate_link_indices_above() -> [[usize; MAX_CHUNK_DEPTH]; MAX_CHUNK_S
 	indices
 }
 
-const fn number_of_links(index: u8) -> u32 {
-	index.trailing_zeros() + 1
+pub const fn number_of_links(index: u8) -> usize {
+	(index.trailing_zeros() + 1) as usize
 }
 
 // endregion
 
-pub struct ChunkSublists<'a, D: Spacing> {
+pub struct SublistsChunk<'a, D: Spacing> {
 	/// The indices pointing to elements in the sublists vector, where the index in the array
 	/// corresponds to the node index the sublist is *before*. If the sublist index is greater than
 	/// or equal to the size of the sublists vector, it is to be understood as there not being a
@@ -68,18 +69,22 @@ pub struct ChunkSublists<'a, D: Spacing> {
 	pub sublists: Vec<&'a dyn SpacedList<D>>,
 }
 
-impl<'a, D: Spacing> Default for ChunkSublists<'a, D> {
+impl<'a, D: Spacing> Default for SublistsChunk<'a, D> {
 	fn default() -> Self {
-		ChunkSublists {
+		SublistsChunk {
 			sublist_indices: [255; MAX_CHUNK_SIZE],
-			sublists: Vec::new()
+			sublists: Vec::new(),
 		}
 	}
 }
 
-impl<'a, D: Spacing> ChunkSublists<'a, D> {
+impl<'a, D: Spacing> SublistsChunk<'a, D> {
 	pub fn new() -> Self {
 		Self::default()
+	}
+
+	fn add_sublist(&mut self, index: u8) {
+		self.sublists.push();
 	}
 }
 
@@ -94,7 +99,7 @@ pub struct SpacedListSkeleton<'a, D: Spacing> {
 	pub total_length: D,
 	pub offset: D,
 	pub levels: Vec<Vec<ChunkSkeleton<D>>>,
-	pub sublists: Vec<ChunkSublists<'a, D>>
+	pub sublists: Vec<SublistsChunk<'a, D>>,
 }
 
 impl<D: Spacing> Default for SpacedListSkeleton<'_, D> {
@@ -104,7 +109,7 @@ impl<D: Spacing> Default for SpacedListSkeleton<'_, D> {
 			total_length: Zero::zero(),
 			offset: Zero::zero(),
 			levels: Vec::new(),
-			sublists: Vec::new()
+			sublists: Vec::new(),
 		}
 	}
 }
@@ -114,26 +119,16 @@ impl<D: Spacing> SpacedListSkeleton<'_, D> {
 		Default::default()
 	}
 
-	fn top_chunk(&self) -> Option<&ChunkSkeleton<D>> {
-		self.levels.last()?.last()
-	}
-
 	fn make_space(&mut self, level: usize, distance: D) {
 		if self.size == 0 {
 			let chunk = ChunkSkeleton::<D>::new();
 			self.levels.push(vec![chunk]);
+			self.sublists.push(Default::default());
 			return;
 		}
 		if level == self.levels.len() {
 			let mut new_top = ChunkSkeleton::<D>::new();
-			let old_top = self.top_chunk().unwrap();
-			// TODO store old top somehow maybe possibly (append_element)? dunno rn
 			new_top.append_node(num_traits::zero());
-			// let old_top = self.top_chunk();
-			// match old_top {
-			// 	None => {}
-			// 	Some(it) => { new_top.append_node(num_traits::zero()) }
-			// }
 			self.levels.push(vec![new_top]);
 			return;
 		}
@@ -143,10 +138,23 @@ impl<D: Spacing> SpacedListSkeleton<'_, D> {
 			self.make_space(level + 1, num_traits::zero());
 			let last_above = self.levels[level + 1].last_mut().unwrap();
 			let new_last = ChunkSkeleton::<D>::new();
-			// TODO store new last somehow maybe possibly (append_element)? dunno rn
 			last_above.append_node(last_total_length + distance);
 			self.levels[level].push(new_last);
+			if level == 0 {
+				self.sublists.push(Default::default());
+			}
 		}
+	}
+
+	fn make_sublist_space(&mut self, sublist_index: usize) -> &dyn SpacedList<D> {
+		let sublist_chunk_index = sublist_index >> 8;
+		let index_in_sublist_chunk = sublist_index & CHUNK_INDEX_MASK;
+		let sublist_chunk = &self.sublists[sublist_chunk_index];
+		let chunk_local_sublist_index = sublist_chunk.sublist_indices[index_in_sublist_chunk];
+		let sublist =
+			*sublist_chunk.sublists.get(chunk_local_sublist_index as usize)
+			              .unwrap_or_else(|| sublist_chunk.add_sublist(chunk_local_sublist_index));
+		sublist
 	}
 }
 
@@ -163,18 +171,22 @@ impl<D: Spacing> SpacedList<D> for SpacedListSkeleton<'_, D> {
 
 	fn node_at(&self, position: D) -> Option<Vec<usize>> {
 		if self.size == 0 || position > self.total_length || position < self.offset {
-			return None
+			return None;
 		}
+		if position == self.offset {
+			return Some(vec![0]);
+		}
+
+		let position_without_offset = position - self.offset;
 
 		let mut current_index = 0usize;
 		let mut current_position: D = num_traits::zero();
 		let mut degree = self.levels.len() * MAX_CHUNK_DEPTH - 1;
 		let mut level = self.levels.len() - 1;
-		// TODO set this somewhere somehow
-		let mut position_before_level_0 = num_traits::zero();
+
 		loop {
 			let chunks = &self.levels[level];
-			let to_next_index = 1usize << level;
+			let to_next_index = 1usize << degree;
 			let next_index = current_index + to_next_index;
 			if next_index < self.size {
 				let chunk = &chunks[current_index >> (level * MAX_CHUNK_DEPTH)];
@@ -183,22 +195,35 @@ impl<D: Spacing> SpacedList<D> for SpacedListSkeleton<'_, D> {
 				let local_index = current_index & (CHUNK_INDEX_MASK << level_degree) >> level_degree;
 				let to_next = chunk.link_lengths[link_index(local_index, local_degree)];
 				let next_position = current_position + to_next;
-				if next_position == position {
-					return Some(vec![current_index])
+				if next_position == position_without_offset {
+					return Some(vec![next_index]);
 				}
-				if next_position > position && degree == 0 {
-					let sublist_index = current_index + 1;
-					let sublists = &self.sublists[sublist_index >> MAX_CHUNK_DEPTH];
-					let local_sublist_index = sublists.sublist_indices[sublist_index & CHUNK_INDEX_MASK];
-					let sublist = sublists.sublists.get(local_sublist_index as usize)?;
-					return sublist.node_at(position - position_before_level_0)
+				if next_position > position_without_offset && degree == 0 {
+					// go into the sublist if one exists
+					let sublist_index = current_index;
+					let sublist_chunk_index = sublist_index >> 8;
+					let index_in_sublist_chunk = sublist_index & CHUNK_INDEX_MASK;
+					let sublist_chunk = &self.sublists[sublist_chunk_index];
+					let sublist_index = sublist_chunk.sublist_indices[index_in_sublist_chunk];
+					let sublist = sublist_chunk.sublists.get(sublist_index as usize);
+					return {
+						let mut vec = vec![current_index];
+						vec.append(&mut sublist?.node_at(position_without_offset - current_position)?);
+						Some(vec)
+					};
 				}
-				if next_position < position {
+				if next_position < position_without_offset {
 					current_position = next_position;
 					current_index = next_index;
 				}
 			}
-			level -= 1
+			if degree == 0 {
+				return None;
+			}
+			if degree % CHUNK_INDEX_MASK == 0 {
+				level -= 1;
+			}
+			degree -= 1;
 		}
 	}
 }
@@ -240,7 +265,7 @@ impl<D: Spacing> ChunkSkeleton<D> {
 
 #[cfg(test)]
 mod tests {
-	use crate::{link_index, LINK_INDICES_ABOVE, LINK_LENGTH_DEGREE_INDICES, number_of_links};
+	use crate::{link_index, LINK_INDICES_ABOVE, LINK_LENGTH_DEGREE_INDICES, number_of_links, SpacedList, SpacedListSkeleton};
 
 	#[test]
 	fn test_link_index() {
@@ -350,5 +375,29 @@ mod tests {
 		assert_eq!(number_of_links(4), 3);
 		assert_eq!(number_of_links(128), 8);
 		assert_eq!(number_of_links(255), 1);
+	}
+
+	#[test]
+	fn test_append_node_and_node_at() {
+		let mut list = SpacedListSkeleton::new();
+		list.append_node(1);
+		assert_eq!(list.offset, 1);
+		assert_eq!(list.levels[0][0].link_lengths, [0; 511]);
+
+		list.append_node(2);
+		assert_eq!(list.offset, 1);
+		assert_eq!(list.levels[0][0].link_lengths[link_index(0, 0)], 2);
+
+		list.append_node(3);
+		assert_eq!(list.offset, 1);
+		assert_eq!(list.levels[0][0].link_lengths[link_index(0, 0)], 2);
+		assert_eq!(list.levels[0][0].link_lengths[link_index(1, 0)], 3);
+		assert_eq!(list.levels[0][0].link_lengths[link_index(0, 1)], 5);
+		assert_eq!(list.levels[0][0].link_lengths[link_index(0, 2)], 5);
+
+		assert_eq!(list.node_at(0), None);
+		assert_eq!(list.node_at(1), Some(vec![0]));
+		assert_eq!(list.node_at(2), None);
+		assert_eq!(list.node_at(3), Some(vec![1]));
 	}
 }

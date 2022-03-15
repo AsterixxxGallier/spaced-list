@@ -1,4 +1,5 @@
-use spaced_list::{LINK_INDICES_ABOVE, LINK_LENGTH_DEGREE_INDICES};
+use std::mem;
+use spaced_list::{LINK_INDICES_ABOVE, number_of_links};
 
 
 fn main() {
@@ -9,13 +10,11 @@ fn main() {
 	// skeleton.append_node(10);
 	// skeleton.append_node(10);
 
-	// for array in LINK_INDICES_ABOVE {
-	// 	for x in array {
-	// 		print!("{:09b} ", x)
-	// 	}
-	// 	println!()
-	// }
-	for x in LINK_LENGTH_DEGREE_INDICES {
-		print!("{:09b} ", x)
+	for (index, array) in LINK_INDICES_ABOVE.iter().enumerate() {
+		print!("{:08b}: ", index);
+		for x in &array[..number_of_links(index as u8)] {
+			print!("{:09b} ", x)
+		}
+		println!()
 	}
 }
