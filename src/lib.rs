@@ -1,7 +1,10 @@
 #![feature(trait_alias)]
+#![feature(int_log)]
 // #![allow(unused_variables)]
 // #![allow(unused_mut)]
 
+
+use std::marker::PhantomData;
 
 use num_traits::{CheckedAdd, CheckedSub, Zero};
 
@@ -58,7 +61,7 @@ pub const fn number_of_links(index: u8) -> usize {
 
 // endregion
 
-pub struct SublistsChunk<'a, D: Spacing> {
+pub struct SublistsChunk<S: SpacedList<D>, D: Spacing> {
 	/// The indices pointing to elements in the sublists vector, where the index in the array
 	/// corresponds to the node index the sublist is *before*. If the sublist index is greater than
 	/// or equal to the size of the sublists vector, it is to be understood as there not being a
@@ -66,43 +69,53 @@ pub struct SublistsChunk<'a, D: Spacing> {
 	/// (the maximum u8 value), so until the sublists vector is full, the unchanged array values
 	/// will not be valid indices for the sublists vector.
 	sublist_indices: [u8; MAX_CHUNK_SIZE],
-	pub sublists: Vec<&'a dyn SpacedList<D>>,
+	pub sublists: Vec<S>,
+	phantom: PhantomData<D>,
 }
 
-impl<'a, D: Spacing> Default for SublistsChunk<'a, D> {
+impl<S: SpacedList<D>, D: Spacing> Default for SublistsChunk<S, D> {
 	fn default() -> Self {
 		SublistsChunk {
 			sublist_indices: [255; MAX_CHUNK_SIZE],
 			sublists: Vec::new(),
+			phantom: PhantomData,
 		}
 	}
 }
 
-impl<'a, D: Spacing> SublistsChunk<'a, D> {
+impl<S: SpacedList<D>, D: Spacing> SublistsChunk<S, D> {
 	pub fn new() -> Self {
 		Self::default()
 	}
 
-	fn add_sublist(&mut self, index: u8) {
-		self.sublists.push();
+	fn add_sublist(&mut self, index: u8) -> &mut S {
+		self.sublist_indices[index as usize] = self.sublists.len() as u8;
+		self.sublists.push(Default::default());
+		// SAFETY: the sublists vector must have a last element, because we just appended it and
+		// nobody could have removed it in the meantime, because we own the vector.
+		unsafe { self.sublists.last_mut().unwrap_unchecked() }
 	}
 }
 
-pub trait SpacedList<D> {
+pub trait SpacedList<D>: Default {
 	fn append_node(&mut self, distance: D);
 
 	fn node_at(&self, position: D) -> Option<Vec<usize>>;
+
+	fn node_before(&self, position: D) -> Option<(Vec<usize>, D)>;
+
+	fn node_after(&self, position: D) -> Option<(Vec<usize>, D)>;
 }
 
-pub struct SpacedListSkeleton<'a, D: Spacing> {
+pub struct SpacedListSkeleton<D: Spacing> {
 	pub size: usize,
 	pub total_length: D,
 	pub offset: D,
 	pub levels: Vec<Vec<ChunkSkeleton<D>>>,
-	pub sublists: Vec<SublistsChunk<'a, D>>,
+	pub sublists: Vec<SublistsChunk<SpacedListSkeleton<D>, D>>,
 }
 
-impl<D: Spacing> Default for SpacedListSkeleton<'_, D> {
+impl<D: Spacing> Default for SpacedListSkeleton<D> {
 	fn default() -> Self {
 		SpacedListSkeleton {
 			size: 0,
@@ -114,7 +127,7 @@ impl<D: Spacing> Default for SpacedListSkeleton<'_, D> {
 	}
 }
 
-impl<D: Spacing> SpacedListSkeleton<'_, D> {
+impl<D: Spacing> SpacedListSkeleton<D> {
 	pub fn new() -> Self {
 		Default::default()
 	}
@@ -146,19 +159,19 @@ impl<D: Spacing> SpacedListSkeleton<'_, D> {
 		}
 	}
 
-	fn make_sublist_space(&mut self, sublist_index: usize) -> &dyn SpacedList<D> {
+	fn make_sublist_space(&mut self, sublist_index: usize) -> &mut Self {
 		let sublist_chunk_index = sublist_index >> 8;
 		let index_in_sublist_chunk = sublist_index & CHUNK_INDEX_MASK;
-		let sublist_chunk = &self.sublists[sublist_chunk_index];
+		let sublist_chunk = &mut self.sublists[sublist_chunk_index];
 		let chunk_local_sublist_index = sublist_chunk.sublist_indices[index_in_sublist_chunk];
-		let sublist =
-			*sublist_chunk.sublists.get(chunk_local_sublist_index as usize)
-			              .unwrap_or_else(|| sublist_chunk.add_sublist(chunk_local_sublist_index));
-		sublist
+		if index_in_sublist_chunk >= sublist_chunk.sublists.len() {
+			return sublist_chunk.add_sublist(index_in_sublist_chunk as u8);
+		}
+		&mut sublist_chunk.sublists[chunk_local_sublist_index as usize]
 	}
 }
 
-impl<D: Spacing> SpacedList<D> for SpacedListSkeleton<'_, D> {
+impl<D: Spacing> SpacedList<D> for SpacedListSkeleton<D> {
 	fn append_node(&mut self, distance: D) {
 		self.make_space(0, distance);
 		if self.size == 0 {
@@ -169,62 +182,188 @@ impl<D: Spacing> SpacedList<D> for SpacedListSkeleton<'_, D> {
 		self.total_length = self.total_length + distance;
 	}
 
+	/// returns the full index of the first node at the given position,
+	/// or None if there is no node at that position
 	fn node_at(&self, position: D) -> Option<Vec<usize>> {
+		// region handle edge cases
 		if self.size == 0 || position > self.total_length || position < self.offset {
 			return None;
 		}
 		if position == self.offset {
 			return Some(vec![0]);
 		}
+		// endregion
 
+		// region subtract offset from position
 		let position_without_offset = position - self.offset;
+		// endregion
 
+		// region define variables about the current state of the traversal
 		let mut current_index = 0usize;
 		let mut current_position: D = num_traits::zero();
-		let mut degree = self.levels.len() * MAX_CHUNK_DEPTH - 1;
+		let mut degree = self.size.log2() as usize;
 		let mut level = self.levels.len() - 1;
+		// endregion
 
 		loop {
+			// region define variables for this step
 			let chunks = &self.levels[level];
 			let to_next_index = 1usize << degree;
 			let next_index = current_index + to_next_index;
+			// endregion
+
 			if next_index < self.size {
+				// region define variables relevant to the local chunk
 				let chunk = &chunks[current_index >> (level * MAX_CHUNK_DEPTH)];
 				let level_degree = level * MAX_CHUNK_DEPTH;
 				let local_degree = degree % MAX_CHUNK_DEPTH;
 				let local_index = current_index & (CHUNK_INDEX_MASK << level_degree) >> level_degree;
+				// endregion
+
+				// region find next position
 				let to_next = chunk.link_lengths[link_index(local_index, local_degree)];
 				let next_position = current_position + to_next;
+				// endregion
+
+				// region return if node found
 				if next_position == position_without_offset {
 					return Some(vec![next_index]);
 				}
+				// endregion
+
+				// region go into the sublist if one exists
 				if next_position > position_without_offset && degree == 0 {
-					// go into the sublist if one exists
-					let sublist_index = current_index;
+					// region find sublist
+					let sublist_index = next_index;
 					let sublist_chunk_index = sublist_index >> 8;
 					let index_in_sublist_chunk = sublist_index & CHUNK_INDEX_MASK;
 					let sublist_chunk = &self.sublists[sublist_chunk_index];
 					let sublist_index = sublist_chunk.sublist_indices[index_in_sublist_chunk];
 					let sublist = sublist_chunk.sublists.get(sublist_index as usize);
+					// endregion
+
+					// region seek result in sublist
 					return {
 						let mut vec = vec![current_index];
 						vec.append(&mut sublist?.node_at(position_without_offset - current_position)?);
 						Some(vec)
 					};
+					// endregion
 				}
+				// endregion
+
+				// region move ahead
 				if next_position < position_without_offset {
 					current_position = next_position;
 					current_index = next_index;
 				}
+				// endregion
 			}
+
+			// region return None if unsuccessful at lowest level
 			if degree == 0 {
 				return None;
 			}
+			// endregion
+
+			// region move below
 			if degree % CHUNK_INDEX_MASK == 0 {
 				level -= 1;
 			}
 			degree -= 1;
+			// endregion
 		}
+	}
+
+	/// returns the full index of the last node before the given position (and the distance from
+	/// that node to the position), or None if there is no node at that position
+	fn node_before(&self, position: D) -> Option<(Vec<usize>, D)> {
+		// region handle edge cases
+		if self.size == 0 || position <= self.offset {
+			return None;
+		}
+		// TODO handle edge case where if position > self.totalLength, the last node is returned
+		// endregion
+
+		// region subtract offset from position
+		let position_without_offset = position - self.offset;
+		// endregion
+
+		// region define variables about the current state of the traversal
+		let mut current_index = 0usize;
+		let mut current_position: D = num_traits::zero();
+		let mut degree = self.size.log2() as usize;
+		let mut level = self.levels.len() - 1;
+		// endregion
+
+		loop {
+			// region define variables for this step
+			let chunks = &self.levels[level];
+			let to_next_index = 1usize << degree;
+			let next_index = current_index + to_next_index;
+			// endregion
+
+			if next_index < self.size {
+				// region define variables relevant to the local chunk
+				let chunk = &chunks[current_index >> (level * MAX_CHUNK_DEPTH)];
+				let level_degree = level * MAX_CHUNK_DEPTH;
+				let local_degree = degree % MAX_CHUNK_DEPTH;
+				let local_index = current_index & (CHUNK_INDEX_MASK << level_degree) >> level_degree;
+				// endregion
+
+				// region find next position
+				let to_next = chunk.link_lengths[link_index(local_index, local_degree)];
+				let next_position = current_position + to_next;
+				// endregion
+
+				if next_position >= position_without_offset/* && degree == 0*/ {
+					// the current position is just before the target position
+
+					// region find sublist
+					let sublist_index = next_index;
+					let sublist_chunk_index = sublist_index >> 8;
+					let index_in_sublist_chunk = sublist_index & CHUNK_INDEX_MASK;
+					let sublist_chunk = &self.sublists[sublist_chunk_index];
+					let sublist_index = sublist_chunk.sublist_indices[index_in_sublist_chunk];
+					let sublist = sublist_chunk.sublists.get(sublist_index as usize);
+					// endregion
+					return match sublist {
+						Some(sublist) if degree == 0 => {
+							// TODO handle case where the sublist is empty
+							// TODO double check that the last node of the sublist is definitely not contained in sub-sublists
+							Some((vec![current_index, sublist.size - 1], position_without_offset - (current_position + sublist.total_length)))
+						}
+						_ => {
+							Some((vec![current_index], position_without_offset - current_position))
+						}
+					}
+				}
+
+				// region move ahead
+				if next_position < position_without_offset {
+					current_position = next_position;
+					current_index = next_index;
+				}
+				// endregion
+			}
+
+			// region return None if unsuccessful at lowest level
+			if degree == 0 {
+				return None;
+			}
+			// endregion
+
+			// region move below
+			if degree % CHUNK_INDEX_MASK == 0 {
+				level -= 1;
+			}
+			degree -= 1;
+			// endregion
+		}
+	}
+
+	fn node_after(&self, _position: D) -> Option<(Vec<usize>, D)> {
+		todo!()
 	}
 }
 
@@ -399,5 +538,55 @@ mod tests {
 		assert_eq!(list.node_at(1), Some(vec![0]));
 		assert_eq!(list.node_at(2), None);
 		assert_eq!(list.node_at(3), Some(vec![1]));
+	}
+
+	#[test]
+	fn test_append_node_and_node_at_with_sublists() {
+		let mut list = SpacedListSkeleton::new();
+		list.append_node(1);
+		assert_eq!(list.offset, 1);
+		assert_eq!(list.levels[0][0].link_lengths, [0; 511]);
+
+		list.append_node(4);
+		assert_eq!(list.offset, 1);
+		assert_eq!(list.levels[0][0].link_lengths[link_index(0, 0)], 4);
+
+		let sublist = list.make_sublist_space(1);
+
+		sublist.append_node(1);
+		sublist.append_node(2);
+
+		assert_eq!(list.node_at(0), None);
+		assert_eq!(list.node_at(1), Some(vec![0]));
+		assert_eq!(list.node_at(2), Some(vec![0, 0]));
+		assert_eq!(list.node_at(3), None);
+		assert_eq!(list.node_at(4), Some(vec![0, 1]));
+		assert_eq!(list.node_at(5), Some(vec![1]));
+		assert_eq!(list.node_at(6), None);
+	}
+
+	#[test]
+	fn test_append_node_and_node_before() {
+		let mut list = SpacedListSkeleton::new();
+		list.append_node(1);
+		assert_eq!(list.offset, 1);
+		assert_eq!(list.levels[0][0].link_lengths, [0; 511]);
+
+		list.append_node(2);
+		assert_eq!(list.offset, 1);
+		assert_eq!(list.levels[0][0].link_lengths[link_index(0, 0)], 2);
+
+		list.append_node(3);
+		assert_eq!(list.offset, 1);
+		assert_eq!(list.levels[0][0].link_lengths[link_index(0, 0)], 2);
+		assert_eq!(list.levels[0][0].link_lengths[link_index(1, 0)], 3);
+		assert_eq!(list.levels[0][0].link_lengths[link_index(0, 1)], 5);
+		assert_eq!(list.levels[0][0].link_lengths[link_index(0, 2)], 5);
+
+		assert_eq!(list.node_before(0), None);
+		assert_eq!(list.node_before(1), None);
+		assert_eq!(list.node_before(2), Some((vec![0], 1)));
+		assert_eq!(list.node_before(3), Some((vec![0], 2)));
+		assert_eq!(list.node_before(4), Some((vec![1], 1)));
 	}
 }
